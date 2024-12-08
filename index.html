@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socket.IO Notifications</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+    }
+    #notifications {
+      max-width: 400px;
+      margin: 20px auto;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      background-color: #f9f9f9;
+    }
+    .notification {
+      background-color: #e0f7fa;
+      border: 1px solid #4dd0e1;
+      color: #00796b;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Notification System</h1>
+  <div id="notifications">
+    <h3>Notifications:</h3>
+    <ul id="notification-list"></ul>
+  </div>
+
+  <script>
+    // JWT token for authentication (in a real application, obtain this from the server)
+    const token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIxMjM0NSIsInVzZXJuYW1lIjoic2FtcGxlVXNlciIsInJvb20iOiJkZWZhdWx0Um9vbSIsImlhdCI6MTcyOTg0NTE1NywiZXhwIjoxNzI5ODQ4NzU3fQ.g9aEH8N7cQIevPzptGCFC8kt6hbV-TMSyHYDcCCth4w";
+
+    // Connect to the server with authentication
+    const socket = io({
+      auth: {
+        token: token
+      }
+    });
+
+    // Function to create and display a new notification
+    function displayNotification(message) {
+      const notificationList = document.getElementById('notification-list');
+      const notificationItem = document.createElement('li');
+      
+      notificationItem.className = 'notification';
+      notificationItem.textContent = message;
+
+      // Add new notification to the top of the list
+      notificationList.insertBefore(notificationItem, notificationList.firstChild);
+
+      // Optional: Auto-remove the notification after 10 seconds
+      setTimeout(() => {
+        notificationList.removeChild(notificationItem);
+      }, 10000);
+    }
+
+    // Listen for notifications from the server
+    socket.on('notification', (message) => {
+      displayNotification(message);
+    });
+
+    // Handle connection errors (e.g., authentication failures)
+    socket.on("connect_error", (err) => {
+      console.error("Connection error:", err.message);
+    });
+  </script>
+</body>
+</html>
