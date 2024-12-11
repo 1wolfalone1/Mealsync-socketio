@@ -23,6 +23,8 @@ CREATE TABLE rooms_v2 (
     PRIMARY KEY (id)       
 );
 
+ALTER TABLE rooms_v2 ADD last_update_id INT;
+ALTER TABLE rooms_v2 ADD isClose INT;
 
 ---
 SELECT * FROM rooms_v2 WHERE map_user_is_read CONTAINS KEY 104 ALLOW FILTERING;

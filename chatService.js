@@ -19,45 +19,55 @@ export async function fetchRoomById(roomId, client) {
   }
 }
 
-export async function insertRoomData(data, roomId, client) {
+export async function insertRoomData(roomId, client, userId, data2) {
   const query = `
-    INSERT INTO rooms_v2 (id, created_at, updated_at, list_user_id, map_user_is_read, last_message)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO rooms_v2 (id, created_at, updated_at, is_close, last_message, last_update_id, list_user_id, map_user_is_read)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  // Prepare the data
-  const currentTime = new Date(); // Get the current timestamp
-  let listUserId = [];
-  let mapUserIsRead = {};
-  if (data.deliveryStaff) {
-    listUserId = [data.customer.id, data.shop.id, data.deliveryStaff?.id];
-    mapUserIsRead = {
-      [data.customer.id]: true,
-      [data.shop.id]: false,
-      [data.deliveryStaff?.id]: false,
-    };
+  let oldData = null;
+  if (data2 && Array.isArray(data2) && data2.length > 0) {
+    oldData = data2[0];
   } else {
-    listUserId = [data.customer.id, data.shop.id];
-    mapUserIsRead = {
-      [data.customer.id]: true,
-      [data.shop.id]: false,
-    };
+    oldData = null;
   }
-  const lastMessage = "Room 4 message."; // Replace with appropriate message
 
   try {
-    // Connect to the cluster (if not already connected)
+    const currentTime = new Date(); // Get the current timestamp
 
-    // Execute the query
+    let mapUserIsRead = {};
+    let listUserId = [];
+    if (oldData) {
+      mapUserIsRead = {
+        ...oldData.map_user_is_read,
+        [userId]: true,
+      };
+      let isHas = oldData.list_user_id.find((i) => i == userId);
+      if (!isHas) {
+        listUserId = [...oldData.list_user_id, userId];
+      }
+    } else {
+      listUserId = [userId];
+      mapUserIsRead = {
+        [userId]: true,
+      };
+    }
+
+    const lastMessage = ""; // Replace with appropriate message
+    const lastUpdateId = userId; // Assuming last_update_id is the userId; modify as needed
+    const isClose = 1; // Assuming is_close is 1; modify as needed
+
     await client.execute(
       query,
       [
-        roomId,
-        currentTime,
-        currentTime,
-        listUserId,
-        mapUserIsRead,
-        lastMessage,
+        roomId, // id
+        currentTime, // created_at
+        currentTime, // updated_at
+        isClose, // is_close
+        lastMessage, // last_message
+        lastUpdateId, // last_update_id
+        listUserId, // list_user_id
+        mapUserIsRead, // map_user_is_read
       ],
       { prepare: true }
     );
@@ -66,11 +76,8 @@ export async function insertRoomData(data, roomId, client) {
   } catch (error) {
     console.error("Error inserting data:", error);
     throw error;
-  } finally {
-    // Close the connection
   }
 }
-
 export async function fetchMessagesByRoomId(roomId, client) {
   const query = "SELECT * FROM messages_by_room WHERE room_id = ?";
   try {
@@ -186,13 +193,15 @@ export async function updateRoomIsReadWithLassMessage(
   roomId,
   userIdsToUpdate,
   lastMessage,
-  client
+  client,
+  userId
 ) {
   const query = `
     UPDATE rooms_v2 
     SET map_user_is_read = map_user_is_read + ? ,
         last_message = ? ,
-        updated_at = ?
+        updated_at = ? ,
+        last_update_id = ?
     WHERE id = ?
   `;
 
@@ -209,7 +218,7 @@ export async function updateRoomIsReadWithLassMessage(
     // Execute the update query
     await client.execute(
       query,
-      [userReadMap, lastMessage, currentTime, roomId],
+      [userReadMap, lastMessage, currentTime, userId, roomId],
       { prepare: true }
     );
 
@@ -264,6 +273,21 @@ export async function getNumNotRead(userId, client) {
     return Number(result.rows[0].count) || 0;
   } catch (error) {
     console.error("Error getting unread count:", error);
+    throw error;
+  }
+}
+
+export async function closeChannel(id, client) {
+  const query = `
+    UPDATE rooms_v2 
+    SET is_close = 2
+    WHERE id = ?
+  `;
+  try {
+    await client.execute(query, [id], { prepare: true });
+    console.log(`Channel ${id} deleted successfully.`);
+  } catch (error) {
+    console.error("Error deleting channel:", error);
     throw error;
   }
 }

@@ -10,9 +10,8 @@ import {
   fetchRoomsByUserReadKey,
   getNumNotRead,
   insertMessageIntoRoom,
-  insertRoomData,
   updateRoomIsRead,
-  updateRoomIsReadWithLassMessage,
+  updateRoomIsReadWithLassMessage
 } from "./chatService.js";
 import { runKafkaConsumer } from "./kafkaConsumer.js";
 import { connectProducer, sendKafkaNotification } from "./kafkaProducer.js";
@@ -47,7 +46,7 @@ io.use((socket, next) => {
     next();
   });
 });
-runKafkaConsumer(io).catch(console.error);
+runKafkaConsumer(io, cassandraClient).catch(console.error);
 // Handle Socket.IO connections
 io.on("connection", (socket) => {
   console.log(`User connected: ${socket.userId}`);
@@ -68,10 +67,27 @@ io.on("connection", (socket) => {
 
     console.log(`room data: ${data}`);
     if (data) {
+      io.to(`${socket.userId}`).emit("checkIsOpen", {
+        isOpen: false,
+        roomId: roomId,
+      });
+      return;
     } else {
-      await insertRoomData(chatData, roomId, cassandraClient);
+      if (data[0].is_close == 1) {
+        io.to(`${socket.userId}`).emit("checkIsOpen", {
+          isOpen: true,
+          roomId: roomId,
+        });
+      } else {
+        console.log("room is open");
+        io.to(`${socket.userId}`).emit("checkIsOpen", {
+          isOpen: false,
+          roomId: roomId,
+        });
+      }
     }
     socket.join(roomId);
+
     const dataMessage = await fetchMessagesByRoomId(roomId, cassandraClient);
     updateRoomIsRead(roomId, [Number(socket.userId)], cassandraClient);
     console.log(dataMessage, " data message");
@@ -139,7 +155,8 @@ io.on("connection", (socket) => {
             roomId,
             mapUpdateIds,
             msg.text,
-            cassandraClient
+            cassandraClient,
+            socket.userId
           );
           for (const mapUpdateId of mapUpdateIds) {
             const data = await fetchRoomsByUserReadKey(
