@@ -19,13 +19,20 @@ CREATE TABLE rooms_v2 (
     updated_at TIMESTAMP,              
     list_user_id LIST<INT>,
     map_user_is_read MAP<INT, BOOLEAN>,
-    last_message TEXT,                 
-    PRIMARY KEY (id)       
-);
+    last_message TEXT,
+    last_update_id INT,
+    is_close INT, 
+    fix_partition INT,                
+    PRIMARY KEY (fix_partition, updated_at)       
+) WITH CLUSTERING ORDER BY (updated_at DESC);
 
-ALTER TABLE rooms_v2 ADD last_update_id INT;
-ALTER TABLE rooms_v2 ADD isClose INT;
+---
 
+CREATE TABLE user_rooms (
+    user_id INT,             
+    room_id INT,              
+    PRIMARY KEY (user_id, room_id) 
+) WITH CLUSTERING ORDER BY (room_id ASC);
 ---
 SELECT * FROM rooms_v2 WHERE map_user_is_read CONTAINS KEY 104 ALLOW FILTERING;
 

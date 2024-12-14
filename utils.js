@@ -1,4 +1,4 @@
-export function toNotification(content, referenceId, title, imageUrl) {
+export function toNotification(content, referenceId, title, imageUrl, entityType) {
  return {
    Id: Date.now(), // Generate unique ID using timestamp
    AccountId: referenceId, // Default AccountId or can be passed as parameter
@@ -7,7 +7,7 @@ export function toNotification(content, referenceId, title, imageUrl) {
    Title: title,
    Content: content,
    Data:"",
-   EntityType: 1,
+   EntityType: 6,
    Type: 200,
    IsSave: true, 
    IsRead: false,

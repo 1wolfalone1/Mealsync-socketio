@@ -1,4 +1,5 @@
 import cassandra from "cassandra-driver";
+import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
 import http from "http";
@@ -7,21 +8,39 @@ import { Server } from "socket.io";
 import {
   fetchMessagesByRoomId,
   fetchRoomById,
-  fetchRoomsByUserReadKey,
+  fetchRoomsByUserReadKeyWithPaging,
   getNumNotRead,
   insertMessageIntoRoom,
   updateRoomIsRead,
-  updateRoomIsReadWithLassMessage
+  updateRoomIsReadWithLassMessage,
 } from "./chatService.js";
 import { runKafkaConsumer } from "./kafkaConsumer.js";
 import { connectProducer, sendKafkaNotification } from "./kafkaProducer.js";
 import { toNotification } from "./utils.js";
-
 dotenv.config();
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 const JWT_SECRET = process.env.JWT_SECRET;
+const allowedOrigins = [
+  "http://localhost:8081",
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://meal-sync-admin-web.vercel.app",
+  "https://meal-sync-web-admin.vercel.app",
+];
+// Configure CORS
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true); // Allow request
+    } else {
+      callback(new Error("Not allowed by CORS")); // Block request
+    }
+  },
+};
+
+app.use(cors(corsOptions)); // Apply CORS middleware
 // Configure Cassandra client to connect to the Docker container
 const cassandraClient = new cassandra.Client({
   contactPoints: [process.env.CASSANDRA_CONTACT_POINTS],
@@ -61,12 +80,12 @@ io.on("connection", (socket) => {
   socket.on("joinRoomsChat", async (msg) => {
     console.log(msg);
 
-    const roomId = String(msg.chatRoomId);
+    const roomId = msg.chatRoomId;
     const chatData = msg.chatData;
     const data = await fetchRoomById(roomId, cassandraClient);
 
-    console.log(`room data: ${data}`);
-    if (data) {
+    console.log(`room data: `, data);
+    if (!data) {
       io.to(`${socket.userId}`).emit("checkIsOpen", {
         isOpen: false,
         roomId: roomId,
@@ -86,24 +105,28 @@ io.on("connection", (socket) => {
         });
       }
     }
-    socket.join(roomId);
+    socket.join(`chatRoom_${roomId}`);
 
     const dataMessage = await fetchMessagesByRoomId(roomId, cassandraClient);
-    updateRoomIsRead(roomId, [Number(socket.userId)], cassandraClient);
+    await updateRoomIsRead(roomId, [Number(socket.userId)], cassandraClient);
     console.log(dataMessage, " data message");
     console.log(roomId, " room id in previos message");
     const data2 = await getNumNotRead(socket.userId, cassandraClient);
     io.to(`${socket.userId}`).emit("getCountNotRead", data2);
-    io.to(roomId).emit("previousMessages", dataMessage);
+    io.to(`chatRoom_${roomId}`).emit("previousMessages", dataMessage);
   });
 
   socket.on("regisListChannel", async (msg) => {
+    console.log(msg, " regis data");
     if (msg) {
-      const data = await fetchRoomsByUserReadKey(
+      const data = await fetchRoomsByUserReadKeyWithPaging(
         cassandraClient,
-        socket.userId
+        socket.userId,
+        msg.pageState,
+        msg.pageSize
       );
       if (data) {
+        console.log(data, " daaaaaaaaaataaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         io.to(socket.userId).emit("getListChannel", data);
       }
     }
@@ -117,6 +140,36 @@ io.on("connection", (socket) => {
       io.to(socket.userId).emit("getCountNotRead", data);
     }
   });
+  socket.on("leaveRoomsChat", async (msg) => {
+    try {
+      const { chatRoomId } = msg; // Extract chatRoomId from the message
+
+      if (!chatRoomId) {
+        console.error("chatRoomId is missing in the message.");
+        return;
+      }
+
+      const roomId = `chatRoom_${chatRoomId}`; // Format room name consistently
+
+      // Make the socket leave the specified room
+      socket.leave(roomId);
+      console.log(`Socket ${socket.id} left room: ${roomId}`);
+
+      // Optionally notify other members in the room that this user has left
+    } catch (error) {
+      console.error("Error leaving room:", error);
+    }
+  });
+  socket.on("getRoomDataById", async (msg) => {
+    try {
+      const data = await fetchRoomById(msg, cassandraClient);
+      if (data && Array.isArray(data) && data.length > 0) {
+        io.to(`${socket.userId}`).emit("receivedRoomData", data[0]);
+      }
+    } catch (error) {
+      console.error("Error fetching room data:", error);
+    }
+  });
   // Handle receiving a new chat message
   socket.on("chatMessage", async (msg) => {
     const messageId = cassandra.types.Uuid.random();
@@ -127,56 +180,77 @@ io.on("connection", (socket) => {
     if (msg) {
       console.log(msg, "message to send check");
       try {
-        const result = await insertMessageIntoRoom(
-          msg,
-          roleId,
-          socket.userId,
-          cassandraClient
-        );
+        const roomId = String(msg.chatRoomId);
 
-        console.log(result, " result message");
-        if (result) {
-          const roomId = String(msg.chatRoomId);
+        console.log(roomId, " chat room id");
 
-          console.log(roomId, " chat room id");
-          io.to(roomId).emit("chatMessage", result);
-
-          const listRoomData = await fetchRoomById(roomId, cassandraClient);
+        const listRoomData = await fetchRoomById(roomId, cassandraClient);
+        if (
+          listRoomData &&
+          Array.isArray(listRoomData) &&
+          listRoomData.length > 0
+        ) {
           const roomData = listRoomData[0];
-          const mapUpdateIds = roomData.list_user_id.reduce((acc, userId) => {
-            if (userId == socket.userId) {
-              return acc;
-            } else {
-              return [...acc, userId];
-            }
-          }, []);
+          if (roomData.is_close == 1) {
+          } else {
+            io.to(`${socket.userId}`).emit(
+              "errorChat",
+              "Phòng nhắn tín đã đóng! Bạn chỉ có thể xem lại lịch sử chat."
+            );
+            return;
+          }
 
-          updateRoomIsReadWithLassMessage(
-            roomId,
-            mapUpdateIds,
-            msg.text,
-            cassandraClient,
-            socket.userId
+          const result = await insertMessageIntoRoom(
+            msg,
+            roleId,
+            socket.userId,
+            cassandraClient
           );
-          for (const mapUpdateId of mapUpdateIds) {
-            const data = await fetchRoomsByUserReadKey(
-              cassandraClient,
-              mapUpdateId
-            );
-            await sendKafkaNotification(socket.userId, mapUpdateId, msg.text);
-            console.log(mapUpdateId, "map update");
-            const notification = toNotification(
+
+          io.to(`chatRoom_${roomId}`).emit("chatMessage", result);
+          if (result) {
+            const mapUpdateIds = roomData.list_user_id.reduce((acc, userId) => {
+              if (userId == socket.userId) {
+                return acc;
+              } else {
+                return [...acc, userId];
+              }
+            }, []);
+
+            await updateRoomIsReadWithLassMessage(
+              roomId,
+              mapUpdateIds,
               msg.text,
-              mapUpdateId,
-              "Tin nhắn từ " + msg.fullName,
-              msg.avatarUrl
+              cassandraClient,
+              socket.userId
             );
-            io.to(`${mapUpdateId}`).emit("notification", notification);
-            if (data) {
-              io.to(`${mapUpdateId}`).emit("getListChannel", data);
-              const data2 = await getNumNotRead(mapUpdateId, cassandraClient);
-              io.to(`${mapUpdateId}`).emit("getCountNotRead", data2);
+            for (const mapUpdateId of mapUpdateIds) {
+              const data = await fetchRoomById(roomId, cassandraClient);
+              await sendKafkaNotification(
+                socket.userId,
+                mapUpdateId,
+                msg.text,
+                roomId
+              );
+              console.log(mapUpdateId, "map update");
+              const notification = toNotification(
+                msg.text,
+                roomId,
+                "Tin nhắn từ " + msg.fullName,
+                msg.avatarUrl,
+                6
+              );
+              io.to(`${mapUpdateId}`).emit("notification", notification);
+              if (data && Array.isArray(data) && data.length > 0) {
+                io.to(`${mapUpdateId}`).emit("getNewMessage", data[0]);
+                const data2 = await getNumNotRead(mapUpdateId, cassandraClient);
+                console.log(data2, " count not read");
+                io.to(`${mapUpdateId}`).emit("getCountNotRead", data2);
+              }
             }
+          } else {
+            console.error("Room not found " + roomData);
+            return;
           }
           /*  const notification = {
             AccountId: socket.userId,

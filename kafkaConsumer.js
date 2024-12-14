@@ -50,6 +50,10 @@ export async function runKafkaConsumer(io, cassandraClient) {
         if (!IsOpen) {
           if (data) {
             closeChannel(RoomId, cassandraClient);
+            io.to(`chatRoom_${RoomId}`).emit(
+              "errorChat",
+              "Phòng nhắn tín đã đóng! Bạn chỉ có thể xem lại lịch sử chat."
+            );
           }
         } else {
           await insertRoomData(RoomId, cassandraClient, UserId, data);

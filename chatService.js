@@ -1,5 +1,5 @@
 export async function fetchRoomById(roomId, client) {
-  const query = "SELECT * FROM rooms_v2 WHERE id = ?";
+  const query = "SELECT * FROM rooms_v2 WHERE id = ? ALLOW FILTERING";
   try {
     // Connect to the cluster (if not already connected)
 
@@ -13,7 +13,6 @@ export async function fetchRoomById(roomId, client) {
     return result.rows;
   } catch (error) {
     console.error("Error executing query:", error);
-    throw error;
   } finally {
     // Optional: Close the connection
   }
@@ -21,10 +20,14 @@ export async function fetchRoomById(roomId, client) {
 
 export async function insertRoomData(roomId, client, userId, data2) {
   const query = `
-    INSERT INTO rooms_v2 (id, created_at, updated_at, is_close, last_message, last_update_id, list_user_id, map_user_is_read)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO rooms_v2 (id, created_at, updated_at, is_close, last_message, last_update_id, list_user_id, map_user_is_read, fix_partition)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
   `;
 
+  const queryInsertUserRoom = `
+    INSERT INTO user_rooms (user_id, room_id)
+    VALUES (?, ?)
+  `;
   let oldData = null;
   if (data2 && Array.isArray(data2) && data2.length > 0) {
     oldData = data2[0];
@@ -33,8 +36,8 @@ export async function insertRoomData(roomId, client, userId, data2) {
   }
 
   try {
-    const currentTime = new Date(); // Get the current timestamp
-
+    const currentTime = oldData ? oldData.updated_at : new Date(); // Get the current timestamp
+    console.log(currentTime, " current tim");
     let mapUserIsRead = {};
     let listUserId = [];
     if (oldData) {
@@ -42,9 +45,11 @@ export async function insertRoomData(roomId, client, userId, data2) {
         ...oldData.map_user_is_read,
         [userId]: true,
       };
-      let isHas = oldData.list_user_id.find((i) => i == userId);
-      if (!isHas) {
-        listUserId = [...oldData.list_user_id, userId];
+      if (oldData.list_user_id && Array.isArray(oldData.list_user_id)) {
+        let isHas = oldData.list_user_id.find((i) => i == userId);
+        if (!isHas) {
+          listUserId = [...oldData.list_user_id, userId];
+        }
       }
     } else {
       listUserId = [userId];
@@ -71,11 +76,12 @@ export async function insertRoomData(roomId, client, userId, data2) {
       ],
       { prepare: true }
     );
-
+    await client.execute(queryInsertUserRoom, [userId, roomId], {
+      prepare: true,
+    });
     console.log("Data inserted successfully!");
   } catch (error) {
     console.error("Error inserting data:", error);
-    throw error;
   }
 }
 export async function fetchMessagesByRoomId(roomId, client) {
@@ -90,7 +96,6 @@ export async function fetchMessagesByRoomId(roomId, client) {
     return result.rows;
   } catch (error) {
     console.error("Error fetching messages:", error);
-    throw error;
   } finally {
     // Optional: Close the connection
   }
@@ -162,6 +167,64 @@ export async function insertMessageIntoRoom(
   }
 }
 
+export async function fetchRoomsByUserReadKeyWithPaging(
+  client,
+  userKey,
+  pageState = null,
+  pageSize = 10
+) {
+  const roomIdsQuery = `
+    SELECT room_id FROM user_rooms 
+    WHERE user_id = ? 
+  `;
+  try {
+    // Execute the query with pageState and pageSize
+    const userRoomsResult = await client.execute(roomIdsQuery, [userKey], {
+      prepare: true,
+    });
+
+    // Extract room_ids from the result
+    const roomIds = userRoomsResult.rows.map((row) => row.room_id);
+
+    if (roomIds.length === 0) {
+      return {
+        data: [],
+        pageState: null,
+        hasNext: false,
+      };
+    }
+
+    // Fetch rooms from rooms_v2, ordered by updated_at with pagination support
+    const roomsQuery = `
+      SELECT * FROM rooms_v2 
+      WHERE id IN ? and fix_partition = 1
+      ALLOW FILTERING
+    `;
+    const params = [roomIds];
+    const result = await client.execute(roomsQuery, params, {
+      prepare: true,
+      fetchSize: pageSize, // Ensure fetchSize for paging
+      pageState, // Include pageState for correct paging
+    }); // Extract rows and new pageState
+    const { rows, pageState: nextPageState } = result;
+    const result2 = await client.execute(roomsQuery, params, {
+      prepare: true,
+      fetchSize: pageSize, // Ensure fetchSize for paging
+      pageState: nextPageState, // Include pageState for correct paging
+    }); // Extract rows and new pageState
+    const { rows: rows2, pageState: nextPageState2 } = result2;
+    // Return rows, nextPageState, and hasNext
+    console.log(rows2, nextPageState2, nextPageState, " rows2 returned");
+    return {
+      data: rows,
+      pageState: nextPageState,
+      hasNext: nextPageState != null ? true : false, // True if there's more data
+    };
+  } catch (error) {
+    console.error("Error fetching rooms by user read key with paging:", error);
+  }
+}
+
 export async function fetchRoomsByUserReadKey(client, userKey) {
   const query = `
     SELECT * FROM rooms_v2 
@@ -185,10 +248,8 @@ export async function fetchRoomsByUserReadKey(client, userKey) {
     }
   } catch (error) {
     console.error("Error fetching rooms by user read key:", error);
-    throw error;
   }
 }
-
 export async function updateRoomIsReadWithLassMessage(
   roomId,
   userIdsToUpdate,
@@ -196,69 +257,93 @@ export async function updateRoomIsReadWithLassMessage(
   client,
   userId
 ) {
-  const query = `
-    UPDATE rooms_v2 
-    SET map_user_is_read = map_user_is_read + ? ,
-        last_message = ? ,
-        updated_at = ? ,
-        last_update_id = ?
-    WHERE id = ?
+  const fetchQuery = `SELECT * FROM rooms_v2 WHERE id = ? ALLOW FILTERING`;
+  const batchQuery = `
+    BEGIN BATCH
+      INSERT INTO rooms_v2 (
+        id, created_at, updated_at, is_close, last_message, last_update_id, list_user_id, map_user_is_read, fix_partition
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1);
+      DELETE FROM rooms_v2 WHERE updated_at = ? AND fix_partition = 1;
+    APPLY BATCH;
   `;
 
   try {
-    // Convert userIdsToUpdate array to map structure
-    // Example: [104, 105] becomes {104: true, 105: true}
+    // Fetch the existing record
+    const fetchResult = await client.execute(fetchQuery, [roomId], {
+      prepare: true,
+    });
+
+    if (fetchResult.rows.length === 0) {
+      console.log(`Room with id ${roomId} not found.`);
+    }
+
+    const oldRecord = fetchResult.rows[0];
+
+    // Prepare new record data
+    const newUpdatedAt = new Date();
     const userReadMap = userIdsToUpdate.reduce((acc, userId) => {
       acc[userId] = false;
       return acc;
-    }, {});
+    }, oldRecord.map_user_is_read);
 
-    const currentTime = new Date();
+    const newRecord = [
+      oldRecord.id, // id
+      oldRecord.created_at, // created_at
+      newUpdatedAt, // updated_at
+      oldRecord.is_close, // is_close
+      lastMessage, // last_message
+      userId, // last_update_id
+      oldRecord.list_user_id, // list_user_id
+      userReadMap, // map_user_is_read
+      oldRecord.updated_at, // DELETE updated_at
+    ];
 
-    // Execute the update query
-    await client.execute(
-      query,
-      [userReadMap, lastMessage, currentTime, userId, roomId],
-      { prepare: true }
-    );
+    // Execute batch query
+    await client.execute(batchQuery, newRecord, { prepare: true });
 
-    console.log(`Successfully updated read status for room ${roomId}`);
-
-    // Optionally fetch and return the updated room data
+    console.log(`Room ${roomId} updated successfully with new last message.`);
   } catch (error) {
-    console.error("Error updating room read status:", error);
-    throw error;
+    console.error("Error updating room with last message:", error);
   }
 }
-
 export async function updateRoomIsRead(roomId, userIdsToUpdate, client) {
-  const query = `
+  const fetchQuery = `SELECT updated_at FROM rooms_v2 WHERE id = ? AND fix_partition = 1 ALLOW FILTERING`;
+
+  const updateQuery = `
     UPDATE rooms_v2 
     SET map_user_is_read = map_user_is_read + ?
-    WHERE id = ?
+    WHERE updated_at = ? AND fix_partition = 1
   `;
 
   try {
-    // Convert userIdsToUpdate array to map structure
-    // Example: [104, 105] becomes {104: true, 105: true}
+    // Fetch current updated_at
+    const fetchResult = await client.execute(fetchQuery, [roomId], {
+      prepare: true,
+    });
+    if (fetchResult.rows.length === 0) {
+      console.log(`Room with id ${roomId} not found.`);
+    }
+    const currentUpdatedAt = fetchResult.rows[0].updated_at;
+
+    // Prepare new data
     const userReadMap = userIdsToUpdate.reduce((acc, userId) => {
       acc[userId] = true;
       return acc;
     }, {});
 
-    const currentTime = new Date();
+    const newUpdatedAt = new Date();
 
     // Execute the update query
-    await client.execute(query, [userReadMap, roomId], { prepare: true });
+    await client.execute(updateQuery, [userReadMap, currentUpdatedAt], {
+      prepare: true,
+    });
 
     console.log(`Successfully updated read status for room ${roomId}`);
-
-    // Optionally fetch and return the updated room data
   } catch (error) {
     console.error("Error updating room read status:", error);
-    throw error;
   }
 }
+
 export async function getNumNotRead(userId, client) {
   const query =
     "SELECT count(id) FROM rooms_v2 WHERE map_user_is_read[?] = false ALLOW FILTERING";
@@ -270,24 +355,39 @@ export async function getNumNotRead(userId, client) {
     console.log(result.rows[0], "dasfafasfd");
     const count = result.rows[0]["system.count(id)"].low;
     return count || 0;
-    return Number(result.rows[0].count) || 0;
   } catch (error) {
     console.error("Error getting unread count:", error);
-    throw error;
   }
 }
-
 export async function closeChannel(id, client) {
-  const query = `
+  const fetchQuery = `SELECT updated_at FROM rooms_v2 WHERE id = ? ALLOW FILTERING`;
+
+  const updateQuery = `
     UPDATE rooms_v2 
     SET is_close = 2
-    WHERE id = ?
+    WHERE updated_at = ? AND fix_partition = 1
   `;
+
   try {
-    await client.execute(query, [id], { prepare: true });
-    console.log(`Channel ${id} deleted successfully.`);
+    // Fetch current updated_at
+    const fetchResult = await client.execute(fetchQuery, [id], {
+      prepare: true,
+    });
+    if (fetchResult.rows.length === 0) {
+      console.log(`Room with id ${id} not found.`);
+    }
+    const currentUpdatedAt = fetchResult.rows[0].updated_at;
+
+    // Prepare new updated_at
+    const newUpdatedAt = new Date();
+
+    // Execute the update query
+    await client.execute(updateQuery, [currentUpdatedAt], {
+      prepare: true,
+    });
+
+    console.log(`Channel ${id} closed successfully.`);
   } catch (error) {
-    console.error("Error deleting channel:", error);
-    throw error;
+    console.error("Error closing channel:", error);
   }
 }
