@@ -1,9 +1,11 @@
+import { createAdapter } from "@socket.io/redis-adapter";
 import cassandra from "cassandra-driver";
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
 import http from "http";
 import jwt from "jsonwebtoken";
+import { createClient } from "redis";
 import { Server } from "socket.io";
 import {
   fetchMessagesByRoomId,
@@ -19,8 +21,21 @@ import { connectProducer, sendKafkaNotification } from "./kafkaProducer.js";
 import { toNotification } from "./utils.js";
 dotenv.config();
 const app = express();
+const pubClient = createClient({
+  url: "redis://redis-cluster.redis-cluster.svc.cluster.local:6379",
+  password: "12345aA@",
+  socket: {
+    tls: false, // Disable SSL
+    reconnectStrategy: (retries) => Math.min(retries * 50, 1000), // Example retry strategy
+  },
+});
+const subClient = pubClient.duplicate();
+
+await Promise.all([pubClient.connect(), subClient.connect()]);
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  adapter: createAdapter(pubClient, subClient),
+});
 const JWT_SECRET = process.env.JWT_SECRET;
 const allowedOrigins = [
   "http://localhost:8081",
