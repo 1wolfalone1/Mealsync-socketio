@@ -17,33 +17,41 @@ const producer = kafka.producer();
 export const connectProducer = async () => {
   try {
     await producer.connect();
-    console.log('Kafka producer connected');
+    console.log("Kafka producer connected");
   } catch (error) {
-    console.error('Failed to connect Kafka producer:', error);
+    console.error("Failed to connect Kafka producer:", error);
   }
 };
 
 // Function to send Kafka notification
-export const sendKafkaNotification = async (fromAccountId, toAccountId, message2) => {
+export const sendKafkaNotification = async (
+  fromAccountId,
+  toAccountId,
+  message2,
+  roomId
+) => {
   try {
     const message = {
       fromAccountId: Number(fromAccountId),
       toAccountId: Number(toAccountId),
-      message: message2
+      message: message2,
+      orderId: roomId,
     };
-    
+
     await producer.send({
-      topic: 'request-notification',
+      topic: "request-notification",
       messages: [
-        { 
-          value: JSON.stringify(message)
-        }
-      ]
+        {
+          value: JSON.stringify(message),
+        },
+      ],
     });
-    
-    console.log(`Sent Kafka notification: from ${fromAccountId} to ${toAccountId}`);
+
+    console.log(
+      `Sent Kafka notification: from ${fromAccountId} to ${toAccountId}`
+    );
   } catch (error) {
-    console.error('Error sending Kafka notification:', error);
+    console.error("Error sending Kafka notification:", error);
   }
 };
 
@@ -51,8 +59,8 @@ export const sendKafkaNotification = async (fromAccountId, toAccountId, message2
 export const disconnectProducer = async () => {
   try {
     await producer.disconnect();
-    console.log('Kafka producer disconnected');
+    console.log("Kafka producer disconnected");
   } catch (error) {
-    console.error('Error disconnecting Kafka producer:', error);
+    console.error("Error disconnecting Kafka producer:", error);
   }
 };
